@@ -8,20 +8,51 @@ import { sfx, buzz } from '../audio.js';
 import { confetti, sparks, coinShower, rectCenter, motion } from './fx.js';
 import * as store from '../store.js';
 
-const EMOTES = ['😂', '😡', '😎', '😭', '🔥', '👏', '🤣', '😱'];
-const PHRASES = ['Thulla time! 😈', 'Oops 😅', 'Good game!', 'Hurry up ⏰', 'Nooo! 😭', 'Too easy 😎'];
+export const EMOTES = ['😂', '😡', '😎', '😭', '🔥', '👏', '🤣', '😱'];
+export const PHRASES = ['Thulla time! 😈', 'Oops 😅', 'Good game!', 'Hurry up ⏰', 'Nooo! 😭', 'Too easy 😎'];
 
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
+const PLACES = ['1st', '2nd', '3rd', '4th', '5th'];
+const coarse = matchMedia('(pointer: coarse)');
+
+/** Count a number up/down in an element (used for coin balances). */
+export function tweenNumber(el, to, ms = 700) {
+  if (!el) return;
+  const from = Number(el.dataset.v ?? String(el.textContent).replace(/[^0-9]/g, '')) || 0;
+  el.dataset.v = String(to);
+  cancelAnimationFrame(Number(el.dataset.raf || 0));
+  if (from === to || motion.reduced) {
+    el.textContent = to.toLocaleString();
+    return;
+  }
+  el.classList.remove('bump-up', 'bump-down');
+  void el.offsetWidth;
+  el.classList.add(to > from ? 'bump-up' : 'bump-down');
+  const t0 = performance.now();
+  const step = (now) => {
+    const k = Math.min(1, (now - t0) / ms);
+    const e = 1 - (1 - k) ** 3;
+    el.textContent = Math.round(from + (to - from) * e).toLocaleString();
+    if (k < 1) el.dataset.raf = String(requestAnimationFrame(step));
+  };
+  el.dataset.raf = String(requestAnimationFrame(step));
+}
+
 export class TableView {
-  constructor(root, { onPlay, onEmote, onLeave, onGameOver, speed = 1 }) {
+  constructor(root, { onPlay, onEmote, onLeave, onLeaveSafe, onFastForward, onSettings, onGameOver, isHost = false, speed = 1 }) {
     this.root = root;
     this.onPlay = onPlay;
     this.onEmote = onEmote;
     this.onLeave = onLeave;
+    this.onLeaveSafe = onLeaveSafe;
+    this.onFastForward = onFastForward;
+    this.onSettings = onSettings;
     this.onGameOver = onGameOver;
-    this.speed = speed;
+    this.isHost = isHost;
+    this.speed = speed * (motion.reduced ? 0.6 : 1);
+    this.selected = null;
+    this.timers = new Set();
     this.queue = [];
     this.busy = false;
     this.dead = false;
@@ -29,8 +60,12 @@ export class TableView {
     this.handEls = new Map();
     this.resetState();
     this.build();
-    this.resizeHandler = () => this.layout();
+    this.resizeHandler = () => {
+      cancelAnimationFrame(this.resizeRaf);
+      this.resizeRaf = requestAnimationFrame(() => this.layout());
+    };
     window.addEventListener('resize', this.resizeHandler);
+    window.addEventListener('orientationchange', this.resizeHandler);
     this.unsub = store.onChange(() => this.updateCoins());
   }
 
@@ -47,12 +82,33 @@ export class TableView {
     this.turn = -1;
     this.discarded = 0;
     this.stake = 0;
+    this.statuses = [];
+    this.selected = null;
+  }
+
+  /** setTimeout that is cancelled automatically when the table closes. */
+  after(ms, fn) {
+    const id = setTimeout(() => {
+      this.timers.delete(id);
+      if (!this.dead) fn();
+    }, ms);
+    this.timers.add(id);
+    return id;
+  }
+
+  wait(ms) {
+    return new Promise((r) => this.after(ms, r));
   }
 
   destroy() {
     this.dead = true;
     window.removeEventListener('resize', this.resizeHandler);
+    window.removeEventListener('orientationchange', this.resizeHandler);
+    cancelAnimationFrame(this.resizeRaf);
     clearInterval(this.tickTimer);
+    clearTimeout(this.unlockTimer);
+    for (const t of this.timers) clearTimeout(t);
+    this.timers.clear();
     this.unsub && this.unsub();
     this.root.innerHTML = '';
   }
@@ -62,10 +118,11 @@ export class TableView {
     this.root.innerHTML = `
       <div class="table-screen">
         <header class="t-top">
-          <button class="icon-btn t-leave" aria-label="Leave game">✕</button>
-          <div class="pill pot"><span class="coin-ico"></span><span class="pot-v">0</span><small>BET</small></div>
-          <div class="pill coins-pill"><span class="coin-ico"></span><b class="my-coins">0</b></div>
-          <button class="icon-btn t-sound" aria-label="Sound"></button>
+          <button class="icon-btn t-leave" aria-label="Leave game" title="Leave game">✕</button>
+          <div class="pill pot" title="Table bet"><small>BET</small><span class="coin-ico"></span><b class="pot-v">0</b><span class="pot-win">win <span class="coin-ico"></span><b class="win-v">0</b></span></div>
+          <div class="pill coins-pill" title="Your coins"><span class="coin-ico"></span><b class="my-coins">0</b></div>
+          <button class="icon-btn t-sound" aria-label="Mute" title="Mute"></button>
+          <button class="icon-btn t-settings" aria-label="Settings" title="Settings">⚙</button>
         </header>
         <div class="felt-wrap">
           <div class="felt">
@@ -73,11 +130,10 @@ export class TableView {
             <div class="felt-logo">THULLA<br/>PARTY</div>
             <div class="discard"><div class="pile"></div><span class="disc-n">0</span></div>
             <div class="trick"></div>
-            <div class="suit-lead"></div>
           </div>
           <div class="seats"></div>
         </div>
-        <div class="hint"></div>
+        <div class="hint" aria-live="polite"></div>
         <div class="hand-area">
           <div class="me-bar">
             <div class="seat me" data-rel="0">
@@ -87,7 +143,12 @@ export class TableView {
             <div class="me-name"></div>
             <button class="icon-btn emote-btn" aria-label="Emotes">😀</button>
           </div>
-          <div class="hand"></div>
+          <div class="hand" role="group" aria-label="Your cards"></div>
+          <div class="safe-panel" hidden>
+            <div class="sp-title"><span class="sp-shield">🛡️</span> You're SAFE</div>
+            <div class="sp-text"></div>
+            <div class="sp-actions"></div>
+          </div>
         </div>
         <div class="emote-tray" hidden>
           <div class="em-row">${EMOTES.map((e) => `<button class="em" data-e="${e}">${e}</button>`).join('')}</div>
@@ -117,9 +178,22 @@ export class TableView {
       coins: q('.my-coins'),
       sound: q('.t-sound'),
       tray: q('.emote-tray'),
-      suitLead: q('.suit-lead'),
+      safePanel: q('.safe-panel'),
+      winV: q('.win-v'),
     };
     q('.t-leave').addEventListener('click', () => this.onLeave());
+    q('.t-settings').addEventListener('click', () => this.onSettings && this.onSettings());
+    this.el.safePanel.addEventListener('click', (e) => {
+      const b = e.target.closest('button');
+      if (!b || b.disabled) return;
+      if (b.classList.contains('sp-leave')) this.onLeaveSafe && this.onLeaveSafe();
+      if (b.classList.contains('sp-ff')) {
+        b.disabled = true;
+        b.textContent = '⏩ Fast-forwarding…';
+        this.speed = Math.min(this.speed, 0.25);
+        this.onFastForward && this.onFastForward();
+      }
+    });
     this.el.sound.addEventListener('click', () => {
       const on = !(store.profile().sound || store.profile().music);
       store.setPref('sound', on);
@@ -141,8 +215,24 @@ export class TableView {
     });
     this.el.hand.addEventListener('click', (e) => {
       const c = e.target.closest('.card');
-      if (c) this.tryPlay(c.dataset.card, c);
+      if (c) this.tapCard(c.dataset.card, c);
     });
+    // Keyboard: Tab/arrow keys move between cards, Enter or Space plays.
+    this.el.hand.addEventListener('keydown', (e) => {
+      const c = e.target.closest('.card');
+      if (!c) return;
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        this.tryPlay(c.dataset.card, c);
+      } else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+        e.preventDefault();
+        const i = this.hand.indexOf(c.dataset.card) + (e.key === 'ArrowRight' ? 1 : -1);
+        const next = this.handEls.get(this.hand[Math.max(0, Math.min(this.hand.length - 1, i))]);
+        if (next) next.focus();
+      }
+    });
+    // Tapping the felt clears a half-made selection.
+    this.el.feltWrap.addEventListener('click', () => this.select(null));
     this.updateSound();
     this.updateCoins();
   }
@@ -150,10 +240,12 @@ export class TableView {
   updateSound() {
     const on = store.profile().sound || store.profile().music;
     this.el.sound.textContent = on ? '🔊' : '🔇';
+    this.el.sound.setAttribute('aria-label', on ? 'Mute sound and music' : 'Turn sound and music on');
+    this.el.sound.setAttribute('aria-pressed', on ? 'false' : 'true');
   }
 
   updateCoins() {
-    if (this.el) this.el.coins.textContent = store.profile().coins.toLocaleString();
+    if (this.el) tweenNumber(this.el.coins, store.profile().coins);
   }
 
   // ------------------------------------------------------------------ geometry
@@ -196,8 +288,13 @@ export class TableView {
   /** Where a seat's card lands in the middle, as % of the felt. */
   slotFor(seat) {
     const a = this.angleOf(seat);
-    const j = () => (Math.random() - 0.5) * 0.05;
-    return { x: 50 + (Math.cos(a) * 0.2 + j()) * 100, y: 50 + (Math.sin(a) * 0.24 + j()) * 100, r: (Math.random() - 0.5) * 30 };
+    const j = () => (Math.random() - 0.5) * 0.04;
+    // Wide, short tables (phones sideways) spread the cards sideways instead.
+    const f = this.el.felt.getBoundingClientRect();
+    const wide = f.height ? Math.min(1, Math.max(0, (f.width / f.height - 1.8) / 1.2)) : 0;
+    const sx = 0.2 + 0.08 * wide;
+    const sy = 0.24 - 0.08 * wide;
+    return { x: 50 + (Math.cos(a) * sx + j()) * 100, y: 50 + (Math.sin(a) * sy + j()) * 100, r: (Math.random() - 0.5) * 26 };
   }
 
   feltPoint(pct) {
@@ -218,6 +315,7 @@ export class TableView {
         <div class="av-wrap"><svg class="timer" viewBox="0 0 100 100"><circle cx="50" cy="50" r="46"/></svg><div class="av">${info.avatar}</div>
           <div class="cnt"><i></i><b>0</b></div></div>
         <div class="nm">${esc(info.name)}${info.kind === 'bot' ? ' <small>BOT</small>' : ''}</div>
+        <div class="status"></div>
         <div class="badge"></div>`;
       d.style.setProperty('--hue', String((s * 67 + 280) % 360));
       this.el.seats.appendChild(d);
@@ -226,7 +324,28 @@ export class TableView {
     this.el.mySeat.dataset.seat = this.you;
     this.el.mySeat.querySelector('.av').textContent = me.avatar;
     this.el.meName.innerHTML = `${esc(me.name)} <span class="me-count"></span>`;
+    for (let s = 0; s < this.n; s++) this.setStatus(s, (this.seats[s] && this.seats[s].status) || 'here', true);
     this.layout();
+  }
+
+  /** Connection status of a friend's seat (shown under their name). */
+  setStatus(seat, status, quiet = false) {
+    this.statuses[seat] = status;
+    if (this.seats[seat]) this.seats[seat].status = status;
+    const el = this.seatEl(seat);
+    if (!el || seat === this.you) return;
+    const label = { away: '📶 Reconnecting… bot playing', quit: 'Left · bot playing', leftSafe: 'Left safe 🛡️' }[status] || '';
+    const st = el.querySelector('.status');
+    if (st) {
+      st.textContent = label;
+      st.className = `status ${label ? 'show' : ''} st-${status}`;
+    }
+    el.classList.toggle('offline', status === 'away' || status === 'quit' || status === 'leftSafe');
+    if (quiet) return;
+    if (status === 'away') this.flashNote(seat, 'Connection lost');
+    if (status === 'here') this.flashNote(seat, 'Back! 👋', 'good');
+    if (status === 'quit') this.flashNote(seat, 'Left the game');
+    if (status === 'leftSafe') this.flashNote(seat, 'Left safe 🛡️', 'good');
   }
 
   setCount(seat, n) {
@@ -295,15 +414,20 @@ export class TableView {
       if (!keep.has(id)) {
         el.remove();
         this.handEls.delete(id);
+        if (this.selected === id) this.selected = null;
       }
     }
     for (const id of this.hand) {
       if (!this.handEls.has(id)) {
         const el = makeCard(id, 'in-hand');
-        if (newCards.includes(id)) el.classList.add('fresh');
+        el.tabIndex = 0;
+        el.setAttribute('role', 'button');
+        if (newCards.includes(id)) {
+          el.classList.add('fresh');
+          this.after(1400, () => el.classList.remove('fresh'));
+        }
         this.handEls.set(id, el);
         this.el.hand.appendChild(el);
-        setTimeout(() => el.classList.remove('fresh'), 1400);
       }
     }
     // DOM order = visual order so overlaps stack correctly.
@@ -343,7 +467,9 @@ export class TableView {
     for (const [id, el] of this.handEls) {
       el.classList.toggle('playable', legal.has(id));
       el.classList.toggle('dim', myTurn && !legal.has(id));
+      el.setAttribute('aria-disabled', myTurn && legal.has(id) ? 'false' : 'true');
     }
+    if (this.selected && myTurn && !legal.has(this.selected)) this.select(null);
     this.el.handArea.classList.toggle('my-turn', myTurn);
     this.updateHint();
   }
@@ -353,8 +479,7 @@ export class TableView {
     let txt = '';
     let cls = '';
     if (this.out[this.you]) {
-      txt = "You're safe! Watch who ends up as the Bhabhi 👀";
-      cls = 'safe';
+      txt = '';
     } else if (this.turn === this.you) {
       cls = 'go';
       const s = this.trick.suit;
@@ -369,10 +494,40 @@ export class TableView {
         cls = 'go thulla-hint';
       }
     } else if (this.turn >= 0 && this.seats[this.turn]) {
-      txt = `${esc(this.seats[this.turn].name)} is thinking…`;
+      const s = this.seats[this.turn];
+      txt = s.kind === 'bot' || s.status !== 'here' ? `${esc(s.name)} is thinking…` : `Waiting for ${esc(s.name)}…`;
     }
+    if (cls.includes('go') && this.selected && !this.oneTapPlay()) txt += ' <span class="hint-sub">· tap again to play</span>';
     h.className = `hint ${cls}`;
     h.innerHTML = txt;
+  }
+
+  oneTapPlay() {
+    return !coarse.matches || store.profile().quickPlay;
+  }
+
+  /** Touch: first tap lifts a card, second tap plays it. Mouse: one click plays. */
+  tapCard(card, el) {
+    if (this.dead) return;
+    const myTurn = this.turn === this.you && !this.locked;
+    if (this.oneTapPlay() || this.selected === card) {
+      if (myTurn) return this.tryPlay(card, el);
+      this.select(this.selected === card ? null : card);
+      return;
+    }
+    if (myTurn && !this.legalCards().includes(card)) return this.tryPlay(card, el); // explains why
+    this.select(card);
+  }
+
+  select(card) {
+    if (this.selected === card) return;
+    if (this.selected) this.handEls.get(this.selected)?.classList.remove('selected');
+    this.selected = card && this.handEls.has(card) ? card : null;
+    if (this.selected) {
+      this.handEls.get(this.selected).classList.add('selected');
+      sfx('select');
+    }
+    this.updateHint();
   }
 
   tryPlay(card, el) {
@@ -382,9 +537,14 @@ export class TableView {
       el.classList.remove('nope');
       void el.offsetWidth;
       el.classList.add('nope');
+      const s = this.trick.suit;
+      if (this.firstTrick && !this.trick.plays.length) this.flashNote(this.you, 'Start with the A♠');
+      else if (s) this.flashNote(this.you, `You must follow ${SUIT_NAME[s]}`);
       return;
     }
     this.locked = true;
+    this.selected = null;
+    el.classList.remove('selected');
     el.classList.add('picked');
     this.refreshPlayable();
     sfx('click');
@@ -422,11 +582,15 @@ export class TableView {
 
   seatPoint(seat) {
     if (seat === this.you) return this.handCenter();
-    return rectCenter(this.seatEl(seat).querySelector('.av'));
+    const el = this.seatEl(seat);
+    return el ? rectCenter(el.querySelector('.av')) : rectCenter(this.el.felt);
   }
 
   placeTrickCard(id, slot, cls = '') {
-    const el = makeCard(id, `in-trick ${cls}`);
+    // The first card of a trick carries a small "LEAD" tag instead of a
+    // separate marker that could overlap other cards on small tables.
+    const lead = !this.el.trick.querySelector('.card');
+    const el = makeCard(id, `in-trick ${cls} ${lead ? 'lead' : ''}`);
     el.style.left = `${slot.x}%`;
     el.style.top = `${slot.y}%`;
     el.style.setProperty('--rot', `${slot.r}deg`);
@@ -441,23 +605,13 @@ export class TableView {
     this.el.discard.classList.toggle('has', this.discarded > 0);
   }
 
-  showSuitLead(s) {
-    const el = this.el.suitLead;
-    if (!s) {
-      el.classList.remove('show');
-      return;
-    }
-    el.className = `suit-lead show s-${s}`;
-    el.innerHTML = suitSvg(s);
-  }
-
   async showBanner(html, cls = '', ms = 1100) {
     const b = this.el.banner;
     b.className = `banner ${cls}`;
     b.innerHTML = `<div class="b-inner">${html}</div>`;
     void b.offsetWidth;
     b.classList.add('show');
-    await wait(ms * this.speed);
+    await this.wait(ms * this.speed);
     b.classList.remove('show');
   }
 
@@ -508,6 +662,8 @@ export class TableView {
         return this.onOver(ev);
       case 'seat':
         return this.onSeat(ev);
+      case 'sync':
+        return this.onSync(ev);
       case 'emote':
         return this.showEmote(ev.seat, ev.e);
       default:
@@ -524,14 +680,19 @@ export class TableView {
     this.out = Array(this.n).fill(false);
     this.places = Array(this.n).fill(0);
     this.el.pot.textContent = ev.stake.toLocaleString();
+    this.el.winV.textContent = (ev.stake * 2).toLocaleString();
+    this.el.safePanel.hidden = true;
+    this.el.hand.hidden = false;
+    this.el.handArea.classList.remove('is-safe');
     this.el.trick.innerHTML = '';
     for (const el of this.handEls.values()) el.remove();
     this.handEls.clear();
     this.renderSeats();
     this.renderPile();
-    this.showSuitLead(null);
-    this.el.hint.innerHTML = 'Dealing…';
+    this.el.hint.innerHTML = 'Shuffling and dealing…';
     this.el.hint.className = 'hint';
+    sfx('start');
+    sfx('shuffle');
 
     const center = rectCenter(this.el.felt);
     const mine = ev.hand.slice();
@@ -547,7 +708,7 @@ export class TableView {
       const i = order++;
       const delay = i * stagger;
       flights.push(
-        wait(delay).then(async () => {
+        this.wait(delay).then(async () => {
           if (this.dead) return;
           if (i % 2 === 0) sfx('deal', i);
           await this.fly({ from: center, to: this.seatPoint(seat), r0: Math.random() * 40 - 20, r1: seat === this.you ? 0 : Math.random() * 60 - 30, s1: seat === this.you ? 1 : 0.45, dur: 330 });
@@ -579,8 +740,10 @@ export class TableView {
     this.setTurn(ev.seat, ev.seconds || 0);
     if (ev.seat === this.you) {
       this.locked = false;
-      sfx('turn');
-      if (store.profile().vibrate) buzz(30);
+      if (!ev.quiet) {
+        sfx('turn');
+        if (store.profile().vibrate) buzz(30);
+      }
     }
     this.refreshPlayable();
   }
@@ -590,7 +753,6 @@ export class TableView {
     const isMe = seat === this.you;
     if (this.trick.plays.length === 0) {
       this.trick.suit = suitOf(card);
-      this.showSuitLead(this.trick.suit);
     }
     this.trick.plays.push({ seat, card });
     this.setTurn(-1);
@@ -634,19 +796,20 @@ export class TableView {
     }
   }
 
-  flashNote(seat, text) {
+  flashNote(seat, text, cls = '') {
+    if (this.dead || !this.n) return;
     const p = seat === this.you ? this.handCenter() : this.seatPoint(seat);
     const n = document.createElement('div');
-    n.className = 'float-note';
+    n.className = `float-note ${cls}`;
     n.textContent = text;
     n.style.left = `${p.x}px`;
     n.style.top = `${p.y - 40}px`;
     this.el.fly.appendChild(n);
-    setTimeout(() => n.remove(), 1400);
+    this.after(1400, () => n.remove());
   }
 
   async onClean(ev) {
-    await wait(450 * this.speed);
+    await this.wait(450 * this.speed);
     const winnerEl = this.seatEl(ev.winner);
     const cards = [...this.el.trick.querySelectorAll('.card')];
     const target = rectCenter(this.el.discard);
@@ -672,7 +835,6 @@ export class TableView {
     this.renderPile();
     this.trick = { suit: null, plays: [] };
     this.firstTrick = false;
-    this.showSuitLead(null);
     if (winnerEl) {
       winnerEl.classList.remove('lead-pulse');
       void winnerEl.offsetWidth;
@@ -681,7 +843,7 @@ export class TableView {
   }
 
   async onThulla(ev) {
-    await wait(250 * this.speed);
+    await this.wait(250 * this.speed);
     const picker = ev.picker;
     const isMe = picker === this.you;
     const dest = this.seatPoint(picker);
@@ -692,12 +854,11 @@ export class TableView {
         const id = el.dataset.card;
         const from = rectCenter(el);
         el.remove();
-        return wait(i * 70 * this.speed).then(() => this.fly({ id, from, to: dest, r0: 0, r1: isMe ? 0 : 200, s1: isMe ? 1 : 0.4, dur: 520 }));
+        return this.wait(i * 70 * this.speed).then(() => this.fly({ id, from, to: dest, r0: 0, r1: isMe ? 0 : 200, s1: isMe ? 1 : 0.4, dur: 520 }));
       }),
     );
     this.trick = { suit: null, plays: [] };
     this.firstTrick = false;
-    this.showSuitLead(null);
     const plus = `+${ev.cards.length}`;
     if (isMe) {
       this.hand = this.hand.concat(ev.cards);
@@ -722,23 +883,48 @@ export class TableView {
     this.places[ev.seat] = ev.place;
     this.setCount(ev.seat, 0);
     const p = this.seatPoint(ev.seat);
-    const place = ['1st', '2nd', '3rd', '4th', '5th'][ev.place - 1];
+    const place = PLACES[ev.place - 1];
     this.badge(ev.seat, `SAFE · ${place}`, 'safe');
-    this.seatEl(ev.seat).classList.add('is-out');
+    this.seatEl(ev.seat)?.classList.add('is-out');
     sfx('safe');
     if (ev.seat === this.you) {
-      confetti(innerWidth / 2, innerHeight * 0.6, 140, 1.2);
-      coinShower(innerWidth / 2, innerHeight * 0.55, 30);
+      confetti(innerWidth / 2, innerHeight * 0.6, 110, 1.2);
       buzz([30, 40, 30]);
+      this.select(null);
       this.updateHint();
-      await this.showBanner(`<span class="big">YOU'RE SAFE!</span><small>${place} out of the game 🎉</small>`, 'safe', 1300);
+      this.showSafePanel(ev.place);
+      await this.showBanner(`<span class="big">SAFE!</span><small>You got out ${place} · your bet is protected</small>`, 'safe', 1200);
     } else {
       confetti(p.x, p.y, 45, 0.9);
-      await wait(350 * this.speed);
+      await this.wait(350 * this.speed);
     }
   }
 
+  /** Shown once you've played your last card. */
+  showSafePanel(place) {
+    const win = (this.stake * 2).toLocaleString();
+    const bet = this.stake.toLocaleString();
+    const coin = '<span class="coin-ico"></span>';
+    let text;
+    let actions;
+    if (this.isHost) {
+      text = `Stay to collect ${coin}<b>${win}</b> when the game ends. You're hosting, so leaving ends the game for everyone and all bets are returned.`;
+      actions = `<button class="btn ghost sp-leave">🚪 Leave (ends game)</button>`;
+    } else {
+      text = `Stay to collect ${coin}<b>${win}</b> when the game ends, or leave now and get your ${coin}<b>${bet}</b> bet back.`;
+      actions = `<button class="btn ghost sp-leave"><span class="bl">🛡️ Leave safely · ${coin}${bet} back</span></button>`;
+    }
+    if (this.onFastForward) actions += '<button class="btn primary sp-ff">⏩ Fast-forward</button>';
+    this.el.safePanel.querySelector('.sp-title').innerHTML = `<span class="sp-shield">🛡️</span> You're SAFE · ${PLACES[place - 1] || ''}`;
+    this.el.safePanel.querySelector('.sp-text').innerHTML = text;
+    this.el.safePanel.querySelector('.sp-actions').innerHTML = actions;
+    this.el.safePanel.hidden = false;
+    this.el.hand.hidden = true;
+    this.el.handArea.classList.add('is-safe');
+  }
+
   async onOver(ev) {
+    this.el.safePanel.querySelectorAll('button').forEach((b) => (b.disabled = true));
     this.setTurn(-1);
     this.el.handArea.classList.remove('my-turn');
     const loser = ev.loser;
@@ -761,20 +947,53 @@ export class TableView {
       1700,
     );
     this.el.screen.classList.remove('game-over');
-    if (this.onGameOver) this.onGameOver(ev);
+    if (this.onGameOver && !this.dead) this.onGameOver(ev);
   }
 
   onSeat(ev) {
-    if (ev.left && this.seats[ev.seat]) {
-      this.seats[ev.seat].kind = 'bot';
-      const nm = this.seatEl(ev.seat)?.querySelector('.nm');
-      if (nm) nm.innerHTML = `${esc(this.seats[ev.seat].name)} <small>BOT</small>`;
-      this.flashNote(ev.seat, 'Left — a bot took over');
+    if (ev.seat === this.you || !this.seats[ev.seat]) return;
+    this.setStatus(ev.seat, ev.status);
+    this.updateHint();
+  }
+
+  /** Redraw everything instantly from a snapshot (after reconnecting). */
+  onSync(ev) {
+    this.resetState();
+    this.seats = ev.seats;
+    this.n = ev.seats.length;
+    this.you = ev.you;
+    this.stake = ev.stake;
+    this.counts = ev.counts.slice();
+    this.out = ev.out.slice();
+    this.places = Array(this.n).fill(0);
+    ev.finishOrder.forEach((s, i) => (this.places[s] = i + 1));
+    this.firstTrick = ev.firstTrick;
+    this.discarded = ev.discarded;
+    this.el.pot.textContent = ev.stake.toLocaleString();
+    this.el.winV.textContent = (ev.stake * 2).toLocaleString();
+    this.el.trick.innerHTML = '';
+    for (const el of this.handEls.values()) el.remove();
+    this.handEls.clear();
+    this.renderSeats();
+    this.renderPile();
+    for (let s = 0; s < this.n; s++) this.setCount(s, ev.counts[s]);
+    for (let s = 0; s < this.n; s++) {
+      if (!this.out[s]) continue;
+      this.badge(s, `SAFE · ${PLACES[this.places[s] - 1]}`, 'safe');
+      this.seatEl(s)?.classList.add('is-out');
     }
+    this.trick = { suit: ev.trick.suit, plays: ev.trick.plays.slice() };
+    for (const p of ev.trick.plays) this.placeTrickCard(p.card, this.slotFor(p.seat));
+    this.hand = ev.hand.slice();
+    this.renderHand();
+    if (this.out[this.you]) this.showSafePanel(this.places[this.you]);
+    this.locked = false;
+    if (ev.turn >= 0) this.onTurn({ seat: ev.turn, seconds: ev.seconds, quiet: true });
+    this.refreshPlayable();
   }
 
   showEmote(seat, e) {
-    if (seat == null || seat < 0 || seat >= this.n) return;
+    if (this.dead || seat == null || seat < 0 || seat >= this.n || typeof e !== 'string') return;
     const p = seat === this.you ? rectCenter(this.el.mySeat) : this.seatPoint(seat);
     const b = document.createElement('div');
     const isEmoji = [...e].length <= 2;
@@ -784,7 +1003,7 @@ export class TableView {
     b.style.top = `${p.y - 50}px`;
     this.el.fly.appendChild(b);
     sfx('pop');
-    setTimeout(() => b.remove(), 2400);
+    this.after(2400, () => b.remove());
   }
 }
 

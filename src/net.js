@@ -56,7 +56,9 @@ export function hostRoom({ onJoin, onMessage, onLeave, onError }) {
         return;
       }
       const conns = new Set();
+      const lastSeen = new Map();
       let opened = false;
+      let beat = 0;
       peer.on('open', () => {
         opened = true;
         resolve({
@@ -68,6 +70,7 @@ export function hostRoom({ onJoin, onMessage, onLeave, onError }) {
             for (const c of conns) if (c.open) c.send(msg);
           },
           close() {
+            clearInterval(beat);
             for (const c of conns) {
               try {
                 c.send({ t: 'closed' });
@@ -79,14 +82,42 @@ export function hostRoom({ onJoin, onMessage, onLeave, onError }) {
           },
         });
       });
+      // Heartbeat: phones that lose signal can take a long time to report a
+      // closed connection, so the host pings and drops anyone silent for 10s.
+      beat = setInterval(() => {
+        const now = Date.now();
+        for (const c of conns) {
+          if (now - (lastSeen.get(c) || now) > 10000) {
+            try {
+              c.close();
+            } catch {
+              /* ignore */
+            }
+            conns.delete(c);
+            onLeave(c);
+          } else if (c.open) {
+            try {
+              c.send({ t: 'ping' });
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+      }, 3000);
       peer.on('connection', (conn) => {
-        conn.on('open', () => conns.add(conn));
+        conn.on('open', () => {
+          conns.add(conn);
+          lastSeen.set(conn, Date.now());
+        });
         conn.on('data', (msg) => {
-          if (!msg || typeof msg !== 'object') return;
+          lastSeen.set(conn, Date.now());
+          if (!msg || typeof msg !== 'object' || typeof msg.t !== 'string') return;
+          if (msg.t === 'pong') return;
           if (msg.t === 'hello') onJoin(conn, msg);
           else onMessage(conn, msg);
         });
         const gone = () => {
+          lastSeen.delete(conn);
           if (!conns.has(conn)) return;
           conns.delete(conn);
           onLeave(conn);
@@ -104,11 +135,15 @@ export function hostRoom({ onJoin, onMessage, onLeave, onError }) {
       });
       peer.on('error', (err) => {
         if (!opened && err.type === 'unavailable-id' && tries++ < 5) {
+          clearInterval(beat);
           peer.destroy();
           attempt();
           return;
         }
-        if (!opened) reject(new Error(friendly(err)));
+        if (!opened) {
+          clearInterval(beat);
+          reject(new Error(friendly(err)));
+        }
         else if (onError) onError(new Error(friendly(err)));
       });
     };
@@ -117,7 +152,7 @@ export function hostRoom({ onJoin, onMessage, onLeave, onError }) {
 }
 
 /** Join a friend's room by code. Resolves with a connection handle. */
-export function joinRoom(code, hello, { onMessage, onClose }) {
+export function joinRoom(code, hello, { onMessage, onClose, timeoutMs = 15000 }) {
   return new Promise((resolve, reject) => {
     let peer;
     try {
@@ -137,18 +172,44 @@ export function joinRoom(code, hello, { onMessage, onClose }) {
       }
       reject(new Error(msg));
     };
-    const timer = setTimeout(() => fail('Could not reach that room. Check the code and try again.'), 15000);
+    const timer = setTimeout(() => fail('Could not reach that room. Check the code and try again.'), timeoutMs);
+    let lastMsg = Date.now();
+    let watch = 0;
+    let closed = false;
+    const lost = () => {
+      if (closed || !settled) return;
+      closed = true;
+      clearInterval(watch);
+      try {
+        peer.destroy();
+      } catch {
+        /* ignore */
+      }
+      if (onClose) onClose();
+    };
     peer.on('open', () => {
       const conn = peer.connect(PREFIX + cleanCode(code), { reliable: true });
       conn.on('open', () => {
         clearTimeout(timer);
         settled = true;
+        lastMsg = Date.now();
         conn.send({ t: 'hello', ...hello });
+        // If the host goes silent (no pings) for 10s, treat it as a lost connection.
+        watch = setInterval(() => {
+          if (Date.now() - lastMsg > 10000) lost();
+        }, 2000);
         resolve({
           send(msg) {
             if (conn.open) conn.send(msg);
           },
+          /** Testing aid: behave exactly as if the network dropped. */
+          simulateDrop() {
+            settled = true;
+            lost();
+          },
           close() {
+            closed = true;
+            clearInterval(watch);
             try {
               conn.close();
             } catch {
@@ -158,16 +219,24 @@ export function joinRoom(code, hello, { onMessage, onClose }) {
           },
         });
       });
-      conn.on('data', (msg) => msg && typeof msg === 'object' && onMessage(msg));
-      conn.on('close', () => settled && onClose && onClose());
-      conn.on('error', () => settled && onClose && onClose());
+      conn.on('data', (msg) => {
+        lastMsg = Date.now();
+        if (!msg || typeof msg !== 'object') return;
+        if (msg.t === 'ping') {
+          if (conn.open) conn.send({ t: 'pong' });
+          return;
+        }
+        onMessage(msg);
+      });
+      conn.on('close', lost);
+      conn.on('error', lost);
     });
     peer.on('error', (err) => {
       if (!settled) {
         clearTimeout(timer);
         fail(friendly(err));
       } else if (err.type === 'peer-unavailable' || err.type === 'network') {
-        onClose && onClose();
+        lost();
       }
     });
   });
@@ -185,6 +254,6 @@ function friendly(err) {
     case 'browser-incompatible':
       return 'This browser does not support online play. Try Chrome, Safari or Firefox.';
     default:
-      return (err && err.message) || 'Something went wrong with the connection.';
+      return 'Something went wrong with the connection. Please try again.';
   }
 }

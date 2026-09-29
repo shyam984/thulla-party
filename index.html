@@ -3,21 +3,45 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
-  <meta name="theme-color" content="#1a0840" />
+  <meta name="theme-color" content="#170a36" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="description" content="Thulla Party — play Bhabhi (Thulla) with friends using a room code, or against the computer. Don't get caught holding the cards!" />
   <meta property="og:title" content="Thulla Party — Bhabhi card game" />
   <meta property="og:description" content="Play Bhabhi / Thulla with friends. Join my room!" />
   <title>Thulla Party — Bhabhi Card Game</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='10' y='4' width='40' height='54' rx='8' fill='%23ff2e93' transform='rotate(-12 30 31)'/%3E%3Crect x='16' y='6' width='40' height='54' rx='8' fill='white'/%3E%3Cpath d='M36 16c4 7 14 12 14 20 0 5-4 8-8 8-3 0-5-1-6-3 0 3 2 6 5 8H29c3-2 5-5 5-8-1 2-3 3-6 3-4 0-8-3-8-8 0-8 10-13 16-20Z' fill='%234338ca'/%3E%3C/svg%3E" />
+  <link rel="preload" href="assets/fonts/lilita-one-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="stylesheet" href="styles/main.css" />
 </head>
 <body>
-  <div id="screen"></div>
+  <div id="screen">
+    <div class="boot" role="status">
+      <div class="boot-cards" aria-hidden="true"><i></i><i></i><i></i></div>
+      <p class="boot-text">Shuffling the deck…</p>
+    </div>
+  </div>
+  <div id="rotate" role="dialog" aria-label="Rotate your phone">
+    <div class="rot-phone" aria-hidden="true"><i></i></div>
+    <h2>Turn your phone sideways</h2>
+    <p>Thulla Party plays best in landscape.</p>
+    <button class="btn primary lg rot-fs" hidden>⛶ Full screen</button>
+    <button class="link rot-anyway">Play in portrait anyway</button>
+  </div>
   <canvas id="fx" aria-hidden="true"></canvas>
   <div id="modal-root"></div>
   <div id="toast-root" aria-live="polite"></div>
   <noscript><div class="noscript">Thulla Party needs JavaScript to run.</div></noscript>
   <script src="vendor/peerjs.min.js"></script>
   <script type="module" src="src/main.js"></script>
+  <script>
+    // If the game code can't start (very old browser, blocked script), say so instead of spinning forever.
+    setTimeout(function () {
+      if (window.__tpBooted) return;
+      var t = document.querySelector('.boot-text');
+      if (t) t.textContent = 'The game is taking a long time to load. Check your connection and refresh, or try an up-to-date browser like Chrome, Safari or Firefox.';
+    }, 10000);
+  </script>
 </body>
 </html>

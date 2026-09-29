@@ -11,6 +11,15 @@ const NAMES = ['Ace', 'Blaze', 'Chai', 'Dhol', 'Ekka', 'Fizz', 'Guddu', 'Jugnu',
 
 export const BOT_NAMES = ['Bunty', 'Pinky', 'Chintu', 'Rani', 'Golu', 'Mona', 'Tinku', 'Bablu', 'Dolly', 'Raju', 'Sweety', 'Munna'];
 
+function newPid() {
+  try {
+    if (crypto.randomUUID) return crypto.randomUUID();
+  } catch {
+    /* fall through */
+  }
+  return `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function randomName() {
   return NAMES[Math.floor(Math.random() * NAMES.length)] + Math.floor(10 + Math.random() * 90);
 }
@@ -23,6 +32,10 @@ function defaults() {
     lastCollect: Date.now(),
     sound: true,
     music: true,
+    sfxVol: 0.8,
+    musicVol: 0.5,
+    quickPlay: false, // play a card with one tap instead of tap-to-select
+    pid: newPid(),
     vibrate: true,
     stats: { played: 0, safe: 0, bhabhi: 0, first: 0, bestStreak: 0, streak: 0, won: 0 },
     seenHelp: false,
@@ -42,6 +55,10 @@ export function load() {
   const d = defaults();
   data = raw && typeof raw === 'object' ? { ...d, ...raw, stats: { ...d.stats, ...(raw.stats || {}) } } : d;
   if (!Number.isFinite(data.coins) || data.coins < 0) data.coins = 0;
+  data.coins = Math.round(data.coins);
+  if (!Number.isFinite(data.lastCollect) || data.lastCollect > Date.now()) data.lastCollect = Date.now();
+  for (const k of ['sfxVol', 'musicVol']) if (!Number.isFinite(data[k]) || data[k] < 0 || data[k] > 1) data[k] = d[k];
+  if (typeof data.pid !== 'string' || data.pid.length < 8) data.pid = d.pid;
   save();
   return data;
 }
@@ -68,7 +85,30 @@ export function setAvatar(a) {
   save();
 }
 
+/**
+ * Pick up coin changes made in another tab before changing coins here, so two
+ * open tabs can't overwrite each other's balance (or collect free coins twice).
+ */
+function refreshShared() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(KEY) || 'null');
+    if (raw && Number.isFinite(raw.coins)) data.coins = Math.max(0, Math.round(raw.coins));
+    if (raw && Number.isFinite(raw.lastCollect)) data.lastCollect = Math.max(data.lastCollect, raw.lastCollect);
+  } catch {
+    /* storage unavailable: memory copy is the truth */
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (e.key !== KEY || !data) return;
+    refreshShared();
+    for (const fn of listeners) fn(data);
+  });
+}
+
 export function addCoins(n) {
+  refreshShared();
   data.coins = Math.max(0, Math.round(data.coins + n));
   save();
 }
@@ -87,6 +127,7 @@ export function freeProgress(now = Date.now()) {
 }
 
 export function collectFree(now = Date.now()) {
+  refreshShared();
   const amt = freeCoins(now);
   if (amt <= 0) return 0;
   const mins = Math.min(FREE_CAP_MIN, Math.floor((now - data.lastCollect) / 60000));
