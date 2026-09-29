@@ -229,19 +229,52 @@ export function buzz(pattern) {
 }
 
 // ------------------------------------------------------------------ music
-// A relaxed, upbeat loop built from oscillators. Two 4-bar sections
-// (Am–F–C–G, then F–G–Em–Am) at 104 bpm, scheduled a little ahead of time.
+// Two loops built from oscillators, scheduled a little ahead of time:
+//   'table' – an upbeat groove for games (Am–F–C–G, F–G–Em–Am at 104 bpm)
+//   'home'  – a chill lo-fi loop for the menus (Fmaj7–Em7–Dm7–Cmaj7 at 76 bpm,
+//             swung, soft keys, brushed drums and a little vinyl crackle)
 
-let musicWanted = false;
+let track = null; // the track asked for: 'home' | 'table' | null
 let musicTimer = null;
 let nextT = 0;
 let step = 0;
+let playingTrack = null;
 
-const BPM = 104;
-const STEP = 60 / BPM / 4;
-const LOOP = 16 * 8;
 const midi = (n) => 440 * 2 ** ((n - 69) / 12);
-const CHORDS = [
+
+function mtone(f, t, dur, { type = 'sine', v = 0.1, f2 = null, attack = 0.012 } = {}) {
+  const o = ctx.createOscillator();
+  const g = ctx.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(f, t);
+  if (f2) o.frequency.exponentialRampToValueAtTime(Math.max(20, f2), t + dur);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(v, t + attack);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g);
+  g.connect(musicFilter);
+  o.start(t);
+  o.stop(t + dur + 0.05);
+}
+
+function mnoise(t, v, { type = 'highpass', freq = 7000, dur = 0.05, dest = null } = {}) {
+  const s = ctx.createBufferSource();
+  s.buffer = noise;
+  const f = ctx.createBiquadFilter();
+  f.type = type;
+  f.frequency.value = freq;
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(v, t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  s.connect(f);
+  f.connect(g);
+  g.connect(dest || musicBus); // drums skip the lowpass so they stay crisp
+  s.start(t, Math.random() * 0.5);
+  s.stop(t + dur + 0.03);
+}
+
+// ---- 'table': upbeat groove
+const T_CHORDS = [
   { root: 45, notes: [57, 60, 64, 67] }, // Am7
   { root: 41, notes: [53, 57, 60, 64] }, // Fmaj7
   { root: 48, notes: [55, 60, 64, 67] }, // C
@@ -251,8 +284,8 @@ const CHORDS = [
   { root: 40, notes: [55, 59, 64, 67] }, // Em
   { root: 45, notes: [57, 60, 64, 69] }, // Am
 ];
-const ARP = [0, 1, 2, 3, 2, 1, 2, 3, 0, 2, 1, 3, 2, 1, 3, 2];
-const MELODY = [
+const T_ARP = [0, 1, 2, 3, 2, 1, 2, 3, 0, 2, 1, 3, 2, 1, 3, 2];
+const T_MELODY = [
   [72, 76, 79, 76, 74, 72, 71, 72],
   [69, 72, 76, 72, 74, 72, 69, 67],
   [72, 76, 79, 84, 79, 76, 74, 76],
@@ -263,83 +296,123 @@ const MELODY = [
   [69, 0, 72, 76, 81, 79, 76, 72],
 ];
 
-function mtone(f, t, dur, { type = 'sine', v = 0.1, f2 = null } = {}) {
-  const o = ctx.createOscillator();
-  const g = ctx.createGain();
-  o.type = type;
-  o.frequency.setValueAtTime(f, t);
-  if (f2) o.frequency.exponentialRampToValueAtTime(Math.max(20, f2), t + dur);
-  g.gain.setValueAtTime(0.0001, t);
-  g.gain.exponentialRampToValueAtTime(v, t + 0.012);
-  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  o.connect(g);
-  g.connect(musicFilter);
-  o.start(t);
-  o.stop(t + dur + 0.05);
-}
-
-function mhat(t, v) {
-  const s = ctx.createBufferSource();
-  s.buffer = noise;
-  const f = ctx.createBiquadFilter();
-  f.type = 'highpass';
-  f.frequency.value = 7000;
-  const g = ctx.createGain();
-  g.gain.setValueAtTime(v, t);
-  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.05);
-  s.connect(f);
-  f.connect(g);
-  g.connect(musicBus); // hats skip the lowpass so they stay crisp
-  s.start(t, Math.random() * 0.5);
-  s.stop(t + 0.08);
-}
-
-function scheduleStep(i, t) {
-  const bar = Math.floor(i / 16) % CHORDS.length;
+function tableStep(i, t, S) {
+  const bar = Math.floor(i / 16) % T_CHORDS.length;
   const k = i % 16;
-  const ch = CHORDS[bar];
+  const ch = T_CHORDS[bar];
   if (k % 4 === 0) mtone(115, t, 0.16, { v: 0.26, f2: 45 });
-  if (k % 2 === 0) mhat(t, k % 4 === 2 ? 0.035 : 0.018);
-  if (k === 4 || k === 12) mhat(t, 0.05);
-  if (k === 0 || k === 6 || k === 8 || k === 14) mtone(midi(ch.root), t, STEP * 3, { type: 'triangle', v: 0.17 });
-  mtone(midi(ch.notes[ARP[k]] + 12), t, STEP * 1.5, { type: 'triangle', v: 0.03 });
-  const note = MELODY[bar][k >> 1];
-  if (k % 2 === 0 && note) mtone(midi(note), t, STEP * 1.9, { type: 'sine', v: 0.06 });
-  if (k === 0) ch.notes.slice(0, 3).forEach((n) => mtone(midi(n), t, STEP * 15, { v: 0.025 }));
+  if (k % 2 === 0) mnoise(t, k % 4 === 2 ? 0.035 : 0.018);
+  if (k === 4 || k === 12) mnoise(t, 0.05);
+  if (k === 0 || k === 6 || k === 8 || k === 14) mtone(midi(ch.root), t, S * 3, { type: 'triangle', v: 0.17 });
+  mtone(midi(ch.notes[T_ARP[k]] + 12), t, S * 1.5, { type: 'triangle', v: 0.03 });
+  const note = T_MELODY[bar][k >> 1];
+  if (k % 2 === 0 && note) mtone(midi(note), t, S * 1.9, { v: 0.06 });
+  if (k === 0) ch.notes.slice(0, 3).forEach((n) => mtone(midi(n), t, S * 15, { v: 0.025 }));
 }
+
+// ---- 'home': chill lo-fi
+const H_CHORDS = [
+  { root: 41, notes: [57, 60, 64, 69] }, // Fmaj7
+  { root: 40, notes: [55, 59, 62, 67] }, // Em7
+  { root: 38, notes: [53, 57, 60, 65] }, // Dm7
+  { root: 36, notes: [55, 59, 64, 67] }, // Cmaj7
+];
+// Sparse pentatonic melody, two notes per beat slot (0 = rest), 8 bars.
+const H_MELODY = [
+  [0, 0, 76, 0, 79, 0, 76, 74],
+  [0, 0, 74, 0, 71, 0, 0, 0],
+  [0, 0, 72, 74, 77, 0, 74, 0],
+  [72, 0, 0, 0, 0, 0, 67, 0],
+  [0, 0, 81, 0, 79, 0, 76, 0],
+  [79, 0, 76, 74, 0, 0, 0, 0],
+  [0, 0, 77, 0, 76, 74, 72, 0],
+  [74, 0, 0, 0, 72, 0, 0, 0],
+];
+
+function keys(n, t, dur, v) {
+  // A soft electric-piano-ish note: sine plus a quiet octave shimmer.
+  mtone(midi(n), t, dur, { v, attack: 0.02 });
+  mtone(midi(n + 12), t, dur * 0.5, { type: 'triangle', v: v * 0.18, attack: 0.01 });
+}
+
+function homeStep(i, t, S) {
+  const bar = Math.floor(i / 16) % 8;
+  const k = i % 16;
+  const ch = H_CHORDS[bar % 4];
+  // Swing: every off-beat 16th lands a little late.
+  const sw = k % 2 === 1 ? S * 0.22 : 0;
+  const tt = t + sw;
+  // Chord stabs on beat 1 and the "and" of 2, gently rolled.
+  if (k === 0 || k === 6) ch.notes.forEach((n, j) => keys(n, tt + j * 0.018, k === 0 ? S * 7 : S * 5, k === 0 ? 0.045 : 0.03));
+  // Bass: root on 1, fifth on the "and" of 3.
+  if (k === 0) mtone(midi(ch.root), tt, S * 6, { type: 'triangle', v: 0.16, attack: 0.02 });
+  if (k === 10) mtone(midi(ch.root + 7), tt, S * 4, { type: 'triangle', v: 0.11, attack: 0.02 });
+  // Soft kick, rim click and brushed hats.
+  if (k === 0 || k === 7 || k === 10) mtone(90, tt, 0.22, { v: 0.2, f2: 40, attack: 0.005 });
+  if (k === 4 || k === 12) mnoise(tt, 0.06, { type: 'bandpass', freq: 1800, dur: 0.08 });
+  if (k % 2 === 0 || Math.random() < 0.3) mnoise(tt, 0.012 + (k % 4 === 2 ? 0.01 : 0), { freq: 8000, dur: 0.04 });
+  // Melody.
+  const note = H_MELODY[bar][k >> 1];
+  if (k % 2 === 0 && note) keys(note, tt, S * 3, 0.05);
+  // Vinyl crackle: a few random ticks.
+  if (Math.random() < 0.35) mnoise(t + Math.random() * S, 0.008 + Math.random() * 0.012, { freq: 3000, dur: 0.012 });
+}
+
+const TRACKS = {
+  table: { bpm: 104, loop: 16 * 8, cutoff: 4200, fn: tableStep },
+  home: { bpm: 76, loop: 16 * 8, cutoff: 2000, fn: homeStep },
+};
 
 function musicTick() {
-  if (!ctx || ctx.state !== 'running') {
+  const T = TRACKS[playingTrack];
+  if (!ctx || ctx.state !== 'running' || !T) {
     nextT = 0;
     return;
   }
+  const S = 60 / T.bpm / 4;
   if (!nextT || nextT < ctx.currentTime) nextT = ctx.currentTime + 0.05;
   while (nextT < ctx.currentTime + 0.3) {
     try {
-      scheduleStep(step, nextT);
+      T.fn(step, nextT, S);
     } catch {
       /* ignore */
     }
-    step = (step + 1) % LOOP;
-    nextT += STEP;
+    step = (step + 1) % T.loop;
+    nextT += S;
   }
 }
 
 function applyMusic() {
-  const play = musicWanted && ctx && musicLevel() > 0;
-  if (play) {
-    if (!musicTimer) musicTimer = setInterval(musicTick, 100);
-  } else if (musicTimer) {
-    clearInterval(musicTimer);
-    musicTimer = null;
+  const want = track && ctx && musicLevel() > 0 ? track : null;
+  if (want && want !== playingTrack) {
+    playingTrack = want;
+    step = 0;
     nextT = 0;
+    musicFilter.frequency.setTargetAtTime(TRACKS[want].cutoff, ctx.currentTime, 0.05);
+    // Fade in so a track change never jumps.
+    const t = ctx.currentTime;
+    musicBus.gain.cancelScheduledValues(t);
+    musicBus.gain.setValueAtTime(0.0001, t);
+    musicBus.gain.linearRampToValueAtTime(musicLevel(), t + 1.2);
+  }
+  if (want) {
+    if (!musicTimer) musicTimer = setInterval(musicTick, 100);
+  } else {
+    playingTrack = null;
+    if (musicTimer) {
+      clearInterval(musicTimer);
+      musicTimer = null;
+      nextT = 0;
+    }
   }
 }
 
-/** Start or stop the background music (the game table calls this). */
-export function playMusic(on) {
-  if (on && !musicWanted) step = 0;
-  musicWanted = !!on;
+/**
+ * Choose the background music: 'home', 'table', or false for silence.
+ * (true is accepted as 'table' for older callers.)
+ */
+export function playMusic(which) {
+  track = which === true ? 'table' : which || null;
   applyMusic();
 }
 
@@ -354,5 +427,5 @@ export function duckMusic(sec = 2.5) {
   musicBus.gain.linearRampToValueAtTime(full, t + sec);
 }
 
-/** For tests: is music currently being scheduled? */
-export const musicPlaying = () => !!musicTimer;
+/** For tests: which track is currently being scheduled. */
+export const musicPlaying = () => playingTrack;

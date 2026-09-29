@@ -7,6 +7,7 @@ import { hostRoom, joinRoom, cleanCode } from './net.js';
 import { initFx, confetti, coinShower, rectCenter } from './ui/fx.js';
 import { sfx, setSoundEnabled, setMusicEnabled, setVolumes, setExternalMute, playMusic, duckMusic } from './audio.js';
 import { suitSvg } from './ui/cards.js';
+import { CHARACTERS, avatarHtml } from './ui/avatars.js';
 import { initPlatform, platform } from './platform.js';
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -227,11 +228,12 @@ function showHome() {
   app.mode = null;
   app.lobby = null;
   const p = store.profile();
+  playMusic('home');
   screen.innerHTML = `
     <div class="home screen-in">
       <div class="bg-cards" aria-hidden="true">${['S', 'H', 'D', 'C', 'H', 'D'].map((s, i) => `<i style="--i:${i}">${suitSvg(s)}</i>`).join('')}</div>
       <header class="home-top">
-        <button class="profile-chip" aria-label="Edit profile"><span class="av">${p.avatar}</span><span class="nm">${esc(p.name)}</span><span class="edit" aria-hidden="true">✎</span></button>
+        <button class="profile-chip" aria-label="Edit profile"><span class="av">${avatarHtml(p.avatar)}</span><span class="nm">${esc(p.name)}</span><span class="edit" aria-hidden="true">✎</span></button>
         <div class="pill coins-pill big" title="Your coins"><span class="coin-ico"></span><b class="home-coins" data-v="${p.coins}">${fmt(p.coins)}</b></div>
       </header>
       <div class="home-main">
@@ -329,13 +331,20 @@ function updateFree() {
 
 function editProfile() {
   const p = store.profile();
+  const pick = (a, label, cls) =>
+    `<button class="av-pick ${cls} ${a === p.avatar ? 'on' : ''}" data-a="${esc(a)}" role="radio" aria-checked="${a === p.avatar}" aria-label="${esc(label)}">${avatarHtml(a)}${cls === 'char' ? `<span>${esc(label)}</span>` : ''}</button>`;
   const m = modal(`
     <h2>Your profile</h2>
+    <div class="prof-preview"><span class="av big-av">${avatarHtml(p.avatar)}</span><div><div class="pp-name">${esc(p.name)}</div><div class="m-hint">This is you at the table</div></div></div>
     <label class="field"><span>Name</span><input class="nm-in" maxlength="14" value="${esc(p.name)}" autocomplete="nickname" /></label>
-    <div class="m-label">Avatar</div>
-    <div class="av-grid" role="radiogroup" aria-label="Avatar">${store.AVATARS.map((a) => `<button class="av-pick ${a === p.avatar ? 'on' : ''}" data-a="${a}" role="radio" aria-checked="${a === p.avatar}" aria-label="Avatar ${a}">${a}</button>`).join('')}</div>
-    <button class="btn primary lg save">Save</button>`);
+    <div class="m-label">Characters</div>
+    <div class="char-grid" role="radiogroup" aria-label="Characters">${CHARACTERS.map((c) => pick(c.id, c.name, 'char')).join('')}</div>
+    <div class="m-label">Or an emoji</div>
+    <div class="av-grid" role="radiogroup" aria-label="Emoji avatars">${store.AVATARS.map((a) => pick(a, `Avatar ${a}`, 'emo')).join('')}</div>
+    <button class="btn primary lg save">Save</button>`, { cls: 'profile' });
   let av = p.avatar;
+  const preview = $('.big-av', m.el);
+  const nameEl = $('.pp-name', m.el);
   $$('.av-pick', m.el).forEach((b) =>
     b.addEventListener('click', () => {
       sfx('pop');
@@ -344,14 +353,25 @@ function editProfile() {
         x.setAttribute('aria-checked', String(x === b));
       });
       av = b.dataset.a;
+      preview.innerHTML = avatarHtml(av);
+      preview.classList.remove('bounce');
+      void preview.offsetWidth;
+      preview.classList.add('bounce');
     }),
   );
+  $('.nm-in', m.el).addEventListener('input', (e) => (nameEl.textContent = e.target.value || p.name));
   const save = () => {
     store.setName($('.nm-in', m.el).value);
     store.setAvatar(av);
     sfx('click');
     m.close();
     if (!app.mode) showHome();
+    else if (app.mode === 'host' && app.lobby && !app.lobby.inGame) {
+      const me = app.lobby.seats[0];
+      me.name = store.profile().name;
+      me.avatar = store.profile().avatar;
+      broadcastLobby();
+    }
   };
   $('.save', m.el).onclick = save;
   $('.nm-in', m.el).addEventListener('keydown', (e) => e.key === 'Enter' && save());
@@ -615,7 +635,7 @@ function showResults(ev) {
       const dl = delta > 0 ? `+${coins(delta)}` : delta < 0 ? `−${coins(-delta)}` : '<span class="even">bet back</span>';
       return `<div class="res-row ${lost ? 'lost' : 'won'} ${s === me ? 'me' : ''}" style="--i:${i}">
         <span class="pl">${lost ? '😭' : MEDALS[i]}<small>${lost ? '' : PLACES[i]}</small></span>
-        <span class="av">${seats[s] ? seats[s].avatar : '🙂'}</span>
+        <span class="av">${avatarHtml(seats[s] ? seats[s].avatar : '🙂')}</span>
         <span class="nm">${esc(seats[s] ? seats[s].name : 'Player')}${s === me ? ' <small>YOU</small>' : ''}${tag}</span>
         <span class="dl">${dl}</span></div>`;
     })
@@ -817,7 +837,7 @@ function hostOnJoin(conn, hello) {
     pid,
     conn,
     name,
-    avatar: store.AVATARS.includes(hello.avatar) ? hello.avatar : '🙂',
+    avatar: store.isAvatar(hello.avatar) ? hello.avatar : '🙂',
     coins: Math.max(0, Math.floor(Number(hello.coins)) || 0),
     kind: 'human',
     ready: false,
@@ -1024,7 +1044,7 @@ function renderLobby() {
       else if (short) state = '<span class="tagx bad">Not enough coins</span>';
       else state = s.ready ? '<span class="tagx ok">✓ Ready</span>' : '<span class="tagx wait">Not ready</span>';
       slots.push(`<div class="slot filled ${s.kind} ${i === me ? 'me' : ''}" style="--i:${i}">
-        <span class="av">${s.avatar}</span>
+        <span class="av">${avatarHtml(s.avatar)}</span>
         <span class="nm">${esc(s.name)}${i === me ? ' <small>YOU</small>' : ''}</span>
         ${state}
         <span class="cc ${short ? 'short' : ''}">${coinIco()}${s.kind === 'bot' ? '∞' : fmt(s.coins)}</span>
@@ -1047,6 +1067,7 @@ function renderLobby() {
     : mine && mine.ready
       ? `<button class="btn ghost xl ready-btn" data-r="0">✓ Ready — tap to cancel</button>`
       : `<button class="btn primary xl ready-btn" data-r="1"><span class="bl">I'm in · bet ${coins(L.stake)}</span></button>`;
+  playMusic('home');
   screen.innerHTML = `
     <div class="lobby screen-in">
       <header class="home-top">

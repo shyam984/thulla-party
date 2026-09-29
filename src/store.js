@@ -1,13 +1,20 @@
 // Player profile, coins and the free-coins meter. Saved in this browser.
 
+import { CHARACTER_IDS } from './ui/avatars.js';
+
 const KEY = 'thullaparty.profile.v1';
 export const START_COINS = 2500;
 export const FREE_PER_MIN = 100;
 export const FREE_CAP_MIN = 60; // free coins stop building after an hour
 export const STAKES = [100, 250, 500, 1000, 2500, 10000];
 
+/** Emoji avatars (computer players use these). */
 export const AVATARS = ['🦁', '🐯', '🐼', '🦊', '🐸', '🐵', '🐨', '🐙', '🦄', '🐲', '🐧', '🦉', '🐻', '🐰', '🐶', '🐱'];
 const NAMES = ['Ace', 'Blaze', 'Chai', 'Dhol', 'Ekka', 'Fizz', 'Guddu', 'Jugnu', 'Kiki', 'Laddoo', 'Mango', 'Nimbu', 'Pappu', 'Rocket', 'Sonu', 'Tikka', 'Zara'];
+
+/** Everything a player may pick: the drawn characters first, then emoji. */
+export const ALL_AVATARS = [...CHARACTER_IDS, ...AVATARS];
+export const isAvatar = (a) => ALL_AVATARS.includes(a);
 
 export const BOT_NAMES = ['Bunty', 'Pinky', 'Chintu', 'Rani', 'Golu', 'Mona', 'Tinku', 'Bablu', 'Dolly', 'Raju', 'Sweety', 'Munna'];
 
@@ -27,7 +34,7 @@ function randomName() {
 function defaults() {
   return {
     name: randomName(),
-    avatar: AVATARS[Math.floor(Math.random() * AVATARS.length)],
+    avatar: CHARACTER_IDS[Math.floor(Math.random() * CHARACTER_IDS.length)],
     coins: START_COINS,
     lastCollect: Date.now(),
     sound: true,
@@ -58,6 +65,7 @@ export function load() {
   data.coins = Math.round(data.coins);
   if (!Number.isFinite(data.lastCollect) || data.lastCollect > Date.now()) data.lastCollect = Date.now();
   for (const k of ['sfxVol', 'musicVol']) if (!Number.isFinite(data[k]) || data[k] < 0 || data[k] > 1) data[k] = d[k];
+  if (!isAvatar(data.avatar)) data.avatar = d.avatar;
   if (typeof data.pid !== 'string' || data.pid.length < 8) data.pid = d.pid;
   save();
   return data;
@@ -81,7 +89,7 @@ export function setName(name) {
 }
 
 export function setAvatar(a) {
-  if (AVATARS.includes(a)) data.avatar = a;
+  if (isAvatar(a)) data.avatar = a;
   save();
 }
 

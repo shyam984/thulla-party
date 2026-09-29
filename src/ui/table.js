@@ -3,6 +3,7 @@
 // so it works the same for solo games and friend rooms.
 
 import { makeCard, suitSvg, SUIT_NAME } from './cards.js';
+import { avatarHtml } from './avatars.js';
 import { sortHand, suitOf, rankOf, rankLabel, START_CARD } from '../engine.js';
 import { sfx, buzz } from '../audio.js';
 import { confetti, sparks, coinShower, rectCenter, motion } from './fx.js';
@@ -312,7 +313,7 @@ export class TableView {
       d.className = 'seat';
       d.dataset.seat = s;
       d.innerHTML = `
-        <div class="av-wrap"><svg class="timer" viewBox="0 0 100 100"><circle cx="50" cy="50" r="46"/></svg><div class="av">${info.avatar}</div>
+        <div class="av-wrap"><svg class="timer" viewBox="0 0 100 100"><circle cx="50" cy="50" r="46"/></svg><div class="av">${avatarHtml(info.avatar)}</div>
           <div class="cnt"><i></i><b>0</b></div></div>
         <div class="nm">${esc(info.name)}${info.kind === 'bot' ? ' <small>BOT</small>' : ''}</div>
         <div class="status"></div>
@@ -322,7 +323,7 @@ export class TableView {
     }
     const me = this.seats[this.you];
     this.el.mySeat.dataset.seat = this.you;
-    this.el.mySeat.querySelector('.av').textContent = me.avatar;
+    this.el.mySeat.querySelector('.av').innerHTML = avatarHtml(me.avatar);
     this.el.meName.innerHTML = `${esc(me.name)} <span class="me-count"></span>`;
     for (let s = 0; s < this.n; s++) this.setStatus(s, (this.seats[s] && this.seats[s].status) || 'here', true);
     this.layout();
