@@ -5,7 +5,7 @@ import { HostMatch } from './match.js';
 import { TableView } from './ui/table.js';
 import { hostRoom, joinRoom, cleanCode } from './net.js';
 import { initFx, confetti, coinShower, rectCenter } from './ui/fx.js';
-import { sfx, setSoundEnabled, unlockAudio } from './audio.js';
+import { sfx, setSoundEnabled, setMusicEnabled, playMusic, duckMusic, unlockAudio } from './audio.js';
 import { suitSvg } from './ui/cards.js';
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -143,6 +143,7 @@ function showHome() {
       <div class="home-foot">
         <button class="link how">How to play</button>
         <button class="link snd">${p.sound ? '🔊 Sound on' : '🔇 Sound off'}</button>
+        <button class="link mus">${p.music ? '🎵 Music on' : '🎵 Music off'}</button>
       </div>
     </div>`;
   $('.profile-chip').onclick = () => (sfx('click'), editProfile());
@@ -152,6 +153,10 @@ function showHome() {
   $('.how').onclick = () => (sfx('click'), howToPlay());
   $('.snd').onclick = () => {
     store.setPref('sound', !store.profile().sound);
+    showHome();
+  };
+  $('.mus').onclick = () => {
+    store.setPref('music', !store.profile().music);
     showHome();
   };
   $('.collect').onclick = (e) => {
@@ -314,6 +319,7 @@ function botReply(seats) {
 function mountTable({ onPlay, onEmote }) {
   clearInterval(app.homeTimer);
   screen.innerHTML = '<div class="table-host"></div>';
+  playMusic(true);
   app.table = new TableView($('.table-host'), {
     onPlay,
     onEmote,
@@ -374,10 +380,11 @@ function showResults(ev) {
         <span class="dl">${delta > 0 ? '+' : '−'}${coinIco()}${fmt(Math.abs(delta))}</span></div>`;
     })
     .join('');
+  duckMusic(4);
   let actions = '';
-  if (app.mode === 'solo') actions = `<button class="btn ghost lg go-home">Home</button><button class="btn primary lg again">Play again</button>`;
-  else if (app.mode === 'host') actions = `<button class="btn ghost lg go-home">Close room</button><button class="btn primary lg lobby">Back to room</button>`;
-  else actions = `<button class="btn ghost lg go-home">Leave</button><div class="waiting">Waiting for the host…</div>`;
+  if (app.mode === 'solo') actions = `<button class="btn ghost lg go-home">🚪 Leave table</button><button class="btn primary lg again">Play again</button>`;
+  else if (app.mode === 'host') actions = `<button class="btn ghost lg go-home">🚪 Leave &amp; close room</button><button class="btn primary lg lobby">Back to room</button>`;
+  else actions = `<button class="btn ghost lg go-home">🚪 Leave room</button><div class="waiting">Waiting for the host…</div>`;
   const m = modal(
     `<div class="res-head ${iLost ? 'lost' : 'won'}">
       <div class="res-emoji">${iLost ? '😭' : '🏆'}</div>
@@ -435,6 +442,7 @@ function leaveToHome() {
 function teardownGame() {
   if (app.match) app.match.destroy();
   if (app.table) app.table.destroy();
+  playMusic(false);
   app.match = null;
   app.table = null;
 }
@@ -787,8 +795,10 @@ function hostGone(text) {
 function boot() {
   store.load();
   setSoundEnabled(store.profile().sound);
+  setMusicEnabled(store.profile().music);
   store.onChange((p) => {
     setSoundEnabled(p.sound);
+    setMusicEnabled(p.music);
     updateHomeCoins();
   });
   initFx($('#fx'));

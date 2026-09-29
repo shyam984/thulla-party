@@ -121,7 +121,9 @@ export class TableView {
     };
     q('.t-leave').addEventListener('click', () => this.onLeave());
     this.el.sound.addEventListener('click', () => {
-      store.setPref('sound', !store.profile().sound);
+      const on = !(store.profile().sound || store.profile().music);
+      store.setPref('sound', on);
+      store.setPref('music', on);
       this.updateSound();
     });
     q('.emote-btn').addEventListener('click', (e) => {
@@ -146,7 +148,7 @@ export class TableView {
   }
 
   updateSound() {
-    const on = store.profile().sound;
+    const on = store.profile().sound || store.profile().music;
     this.el.sound.textContent = on ? '🔊' : '🔇';
   }
 

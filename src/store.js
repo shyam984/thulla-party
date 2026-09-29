@@ -4,7 +4,7 @@ const KEY = 'thullaparty.profile.v1';
 export const START_COINS = 2500;
 export const FREE_PER_MIN = 100;
 export const FREE_CAP_MIN = 60; // free coins stop building after an hour
-export const STAKES = [100, 250, 500, 1000, 2500];
+export const STAKES = [100, 250, 500, 1000, 2500, 10000];
 
 export const AVATARS = ['🦁', '🐯', '🐼', '🦊', '🐸', '🐵', '🐨', '🐙', '🦄', '🐲', '🐧', '🦉', '🐻', '🐰', '🐶', '🐱'];
 const NAMES = ['Ace', 'Blaze', 'Chai', 'Dhol', 'Ekka', 'Fizz', 'Guddu', 'Jugnu', 'Kiki', 'Laddoo', 'Mango', 'Nimbu', 'Pappu', 'Rocket', 'Sonu', 'Tikka', 'Zara'];
@@ -22,6 +22,7 @@ function defaults() {
     coins: START_COINS,
     lastCollect: Date.now(),
     sound: true,
+    music: true,
     vibrate: true,
     stats: { played: 0, safe: 0, bhabhi: 0, first: 0, bestStreak: 0, streak: 0, won: 0 },
     seenHelp: false,
